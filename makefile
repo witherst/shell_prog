@@ -1,7 +1,7 @@
 CC=gcc
-CFLAGS=-g -lpthread -std=c99
+CFLAGS=-g -std=c99
 
-test: test
+test: smallsh.c
 	$(CC) $(CFLAGS) -o test smallsh.c
 
 clean:
