@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <fcntl.h>
+#include <errno.h>
 
 // Custom defines
 #define DEBUG 1
@@ -17,11 +18,12 @@ void exitProg(char*, char**, char*, char*, char*, char*);
 int pidLength(int);
 void getCmdAndArgs(char*, char**, char*, int*);
 void expandString(char*, char*, int, int);
-void forkAndExec(char*, char**, int, char*, char*);
+void forkAndExec(char*, char**, int, char*, char*, int*);
 void changeDirs(char**, int);
 void getFileNames(char*, char*, char**, int);
 bool isAmp(char**, int);	// TODO: Think of better name for this
-void cullArgs(char*, char*, char**, int*);
+void cullArgs(char*, char*, char**, int*, bool);
+void checkStatus(int);
 
 int main(){
 
@@ -84,7 +86,7 @@ int main(){
 			exitProg(cmd, args, userIn, expStr, inFileName, outFileName);
 		}
 		else if(strcmp(userIn, "status") == 0){
-			printf("You entered 'status'.\n");
+			checkStatus(childExitStatus);
 		}
 		else if(strcmp(userIn, " ") == 0 || userIn[0] == '#' || strcmp(userIn, "") == 0){	// Comment line, skip
 			continue;
@@ -102,17 +104,15 @@ int main(){
 			// Check for redirection and get filenames if necessary
 			getFileNames(inFileName, outFileName, args, argCount);
 
-			// Check file names and "cull" these arguments out of the array
-			cullArgs(inFileName, outFileName, args, &argCount);
-
-			printf("inFileName: %s, outFileName: %s\n", inFileName, outFileName);
+			// Check file names and "cull" these arguments out of the array along with an ampersand if there is one
+			cullArgs(inFileName, outFileName, args, &argCount, hasAmp);
 
 			if(strcmp(cmd, "cd") == 0){
 				changeDirs(args, argCount);
 			}
 			else{
 				// Fork and exec
-				forkAndExec(cmd, args, argCount, inFileName, outFileName);
+				forkAndExec(cmd, args, argCount, inFileName, outFileName, &childExitStatus);
 			}
 		}
 
@@ -135,22 +135,43 @@ int main(){
 	return 0;
 }
 
+void checkStatus(int stat){
+	int exitStatus;
+
+	if(stat == -1){
+		printf("No status to check.\n");
+		fflush(stdout);
+	}
+	
+	if(WIFEXITED(stat)){
+		exitStatus = WEXITSTATUS(stat);
+		printf("exit value %d\n", exitStatus);
+	}
+}
+
 /**********************
  * Function will look check to see if inFileName and/or outFileName
  * exist. If one or both exists, we will subtract the argCount. Ex:
  * "ls -la > junk", argCount will be 4. We will make argCount 2 and
  * get rid of "> junk" in the arg list
  **********************/
-void cullArgs(char* inFileName, char* outFileName, char** args, int* argCount){
+void cullArgs(char* inFileName, char* outFileName, char** args, int* argCount, bool hasAmp){
 	char* stop;
 
 	stop = malloc(2*sizeof(char));
 	stop[0] = '>';
 	stop[1] = '\0';
 
+	// If there's an ampersand, cull it from the arguments
+	if(hasAmp){
+		args[*argCount-1] = '\0';
+		*argCount -= 1;
+	}
+
 	// If there is no out or in file name, we're not doing redirection,
 	// so change nothing
 	if(strcmp(inFileName, "") == 0 && strcmp(outFileName, "") == 0){
+		free(stop);
 		return;
 	}
 	
@@ -218,7 +239,7 @@ void changeDirs(char** args, int argc){
 /***************************
  * Write stuff
  ***************************/
-void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFileName){
+void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFileName, int* childExitStatus){
 	// File vars	
 	int targetFD, sourceFD;
 	int result;
@@ -226,7 +247,6 @@ void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFi
 	// Other vars
 	pid_t spawnPid = -5;
 	pid_t actualPid = -5;
-	int childExitStatus = -5;
 	spawnPid = fork();
 
 	switch(spawnPid){
@@ -235,20 +255,39 @@ void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFi
 			exit(1);
 			break;
 		case 0:			// Child
-			if(outFileName){
+			if(strcmp(outFileName, "")){
 				targetFD = open(outFileName, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+				
+				// Checking output file for validity
+				if(targetFD < 0){
+					printf("cannot open %s for output\n", outFileName);
+					return;
+				}
+			
 				fcntl(targetFD, F_SETFD, FD_CLOEXEC);	// Close on exec
 				result = dup2(targetFD, 1);
 			}
-			if(inFileName){
+
+			if(strcmp(inFileName, "")){
 				sourceFD = open(inFileName, O_RDONLY);	
+				if(sourceFD < 0){
+					printf("cannot open %s for input\n", inFileName);
+					return;
+				}
+
 				fcntl(sourceFD, F_SETFD, FD_CLOEXEC);	// Close on exec
 				result = dup2(sourceFD, 0);
 			}
-			execvp(*args, args);
+			
+			// Exec
+			if(execvp(*args, args) < 0){
+				printf("%s: ", args[0]);
+				fflush(stdout);
+				perror("");
+			}
 			break;
 		default:		// Parent
-			actualPid = waitpid(spawnPid, &childExitStatus, 0);	// Wait for child to finish before moving on
+			actualPid = waitpid(spawnPid, childExitStatus, 0);	// Wait for child to finish before moving on
 			break;
 	}
 }
