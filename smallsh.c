@@ -10,23 +10,28 @@
 #include <errno.h>
 
 // Custom defines
-#define DEBUG 1
+#define DEBUG 0
+#define MAXPID 512
 
 // Function prototypes
 void cd();
-void exitProg(char*, char**, char*, char*, char*, char*);
+void exitProg(char*, char**, char*, char*, char*, char*, int*);
 int pidLength(int);
 void getCmdAndArgs(char*, char**, char*, int*);
 void expandString(char*, char*, int, int);
-void forkAndExec(char*, char**, int, char*, char*, int*);
+void forkAndExec(char*, char**, int, char*, char*, int*, bool, int**, int*);
 void changeDirs(char**, int);
 void getFileNames(char*, char*, char**, int);
 bool isAmp(char**, int);	// TODO: Think of better name for this
 void cullArgs(char*, char*, char**, int*, bool);
 void checkStatus(int);
+bool isEmpty(int);
+bool containsPid(int*, int);
+void addPid(int*, int, int*);
+void printChildPids(int*, int);
+void checkForTerm(int*, int*);
 
 int main(){
-
 	// Redirect and file variables
 	bool hasAmp;
 	char* inFileName;
@@ -44,6 +49,8 @@ int main(){
 	// New process variables
 	pid_t spawnPid = -5;
 	int childExitStatus = -5;
+	int* childPids;				// Array to hold child PIDs that are running in the bg
+	int childCount = 0;
 
 	// String splitting variables
 	char* token;				// Will be used with strtok to split lines of file to get info I want
@@ -61,9 +68,13 @@ int main(){
 	expStr = malloc(2048 * sizeof(char));
 	inFileName = calloc(256, sizeof(char));
 	outFileName = calloc(256, sizeof(char));
+	childPids = malloc(MAXPID * sizeof(int));
 
 	// Begin console prompt
-	while(1){
+	while(1){	
+		// Check child processes for termination
+		checkForTerm(childPids, &childCount);
+
 		// Reset necessary variables
 		hasAmp = false;
 		argCount = 0;
@@ -72,7 +83,7 @@ int main(){
 		memset(args, '\0', sizeof(args)*sizeof(char*));
 		memset(expStr, '\0', sizeof(expStr));
 		memset(inFileName, '\0', sizeof(inFileName));
-		memset(outFileName, '\0', sizeof(outFileName));
+		memset(outFileName, '\0', sizeof(outFileName));	
 
 		printf(": ");
 		fflush(stdout);
@@ -83,7 +94,7 @@ int main(){
 
 		// Built-in shell functions	
 		if(strcmp(userIn, "exit") == 0){
-			exitProg(cmd, args, userIn, expStr, inFileName, outFileName);
+			exitProg(cmd, args, userIn, expStr, inFileName, outFileName, childPids);
 		}
 		else if(strcmp(userIn, "status") == 0){
 			checkStatus(childExitStatus);
@@ -112,7 +123,7 @@ int main(){
 			}
 			else{
 				// Fork and exec
-				forkAndExec(cmd, args, argCount, inFileName, outFileName, &childExitStatus);
+				forkAndExec(cmd, args, argCount, inFileName, outFileName, &childExitStatus, hasAmp, &childPids, &childCount);
 			}
 		}
 
@@ -121,13 +132,15 @@ int main(){
 			printf("\n***********DEBUG*************\n");
 			printf("Command: %s\nArgs: ", cmd);
 		
-			for(int i = 0; i < argCount + 3; i++){
+			for(int i = 0; i < argCount; i++){
 				printf("%s", args[i]);
 				if(i != argCount-1){
 					printf(", ");
 				}
 			}
 			printf(". Total: %d\n", argCount);
+			
+			printf("*******END DEBUG*************\n");
 		}
 		fflush(stdout);	
 	}
@@ -135,6 +148,79 @@ int main(){
 	return 0;
 }
 
+void checkForTerm(int* childPids, int* count){
+	int exitStatus;
+	int check;
+	int exit = -1;
+
+	for(int i = 0; i < *count; i++){
+		check = waitpid(childPids[i], &exitStatus, WNOHANG);
+
+		// If check > 0, process has finished, get exitStatus and print
+		if(check > 0){
+			if(WIFEXITED(exitStatus) != 0){
+				exit = WEXITSTATUS(exitStatus);
+				printf("background pid %d is done: exit value %d\n", childPids[i], exit);
+			}
+			else if(WIFSIGNALED(exitStatus) != 0){
+				exit = WTERMSIG(exitStatus);
+				printf("background pid %d is done: terminated by signal %d\n", childPids[i], exit);
+			}	
+
+			// Remove pid from the array, i.e., move down values one slot
+			for(int j = i; j < *count-1; j++){
+				childPids[j] = childPids[j+1];
+			}
+			*count -= 1;
+		}
+	}	
+}
+
+void printChildPids(int* childPids, int childCount){
+	for(int i = 0; i < childCount; i++){
+		printf("id[%d]: %d\n", i, childPids[i]);
+	}
+	printf("\n");
+
+}
+
+/******************
+ * Function will add the passed in pid if
+ * it doesn't already exist in the array
+ ******************/
+void addPid(int* childPids, int pid, int* childCount){
+	bool add = true;
+
+	// Check if pid exists in array
+	if(!isEmpty){
+		for(int i = 0; i < *childCount; i++){
+			if(childPids[i] == pid){
+				false;	
+			}
+		}
+	}
+
+	// Add pid if it doesn't exist in the array
+	if(add){
+		fflush(stdout);
+		if(*childCount >= MAXPID-1){
+			return;		// Don't add pid if we have too many processes
+		}
+		else{
+			childPids[*childCount] = pid;
+			*childCount += 1;
+		}
+	}
+}
+
+bool isEmpty(int childCount){
+	return childCount == 0;
+}
+
+/*********************
+ * Function will print the exit status
+ * of parm stat
+ *********************/
 void checkStatus(int stat){
 	int exitStatus;
 
@@ -239,7 +325,7 @@ void changeDirs(char** args, int argc){
 /***************************
  * Write stuff
  ***************************/
-void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFileName, int* childExitStatus){
+void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFileName, int* childExitStatus, bool hasAmp, int** childPids, int* childCount){
 	// File vars	
 	int targetFD, sourceFD;
 	int result;
@@ -255,6 +341,7 @@ void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFi
 			exit(1);
 			break;
 		case 0:			// Child
+			// If an output file name exists
 			if(strcmp(outFileName, "")){
 				targetFD = open(outFileName, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 				
@@ -267,7 +354,14 @@ void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFi
 				fcntl(targetFD, F_SETFD, FD_CLOEXEC);	// Close on exec
 				result = dup2(targetFD, 1);
 			}
+			else if(hasAmp){
+				// If this is a bg process and no output file, redirect stdout to /dev/null
+				targetFD = open("/dev/null", O_WRONLY);
+				fcntl(targetFD, F_SETFD, FD_CLOEXEC);	// Close on exec
+				dup2(targetFD, 1);
+			}
 
+			// If an input file name exists
 			if(strcmp(inFileName, "")){
 				sourceFD = open(inFileName, O_RDONLY);	
 				if(sourceFD < 0){
@@ -278,16 +372,34 @@ void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFi
 				fcntl(sourceFD, F_SETFD, FD_CLOEXEC);	// Close on exec
 				result = dup2(sourceFD, 0);
 			}
+			else if(hasAmp){
+				// If this is a bg process and no input file, redirect stdin from /dev/null
+				sourceFD = open("/dev/null", O_RDONLY);
+				fcntl(sourceFD, F_SETFD, FD_CLOEXEC);	// Close on exec
+				dup2(sourceFD, 0);
+			}
 			
 			// Exec
 			if(execvp(*args, args) < 0){
 				printf("%s: ", args[0]);
 				fflush(stdout);
 				perror("");
+				exit(1);	// Exit process if there was an error
 			}
 			break;
 		default:		// Parent
-			actualPid = waitpid(spawnPid, childExitStatus, 0);	// Wait for child to finish before moving on
+			// If a FG process, wait for proc to finish
+			if(!hasAmp){
+				actualPid = waitpid(spawnPid, childExitStatus, 0);	// Wait for child to finish before moving on
+			}
+			else{
+				// BG Process
+				// Add pid of child to childPids array of a bg process
+				addPid(*childPids, spawnPid, childCount);	
+				printf("background pid is %d\n", spawnPid);
+				fflush(stdout);
+			}
+				
 			break;
 	}
 }
@@ -374,12 +486,13 @@ void cd(){
  * will be freed from cmd and args array. And the sneaky
  * userIn that's malloced within strtok.
  ****************/
-void exitProg(char* cmd, char** args, char* userIn, char* expStr, char* inFileName, char* outFileName){
+void exitProg(char* cmd, char** args, char* userIn, char* expStr, char* inFileName, char* outFileName, int* childPids){
 	free(cmd);
 	free(args);
 	free(userIn);
 	free(expStr);
 	free(inFileName);
 	free(outFileName);
+	free(childPids);
 	exit(0);
 }
