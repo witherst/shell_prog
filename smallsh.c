@@ -63,8 +63,9 @@ int main(){
 	char** args;
 	char* expStr;				// Will be expanded string (replacing '$$' with pid)
 	int argCount;
+	bool isFgMode = false;
 
-	// Setup signals for SIGINT and SIGSTP
+	// Setup signals for SIGINT and SIGTSTP
 	setupSignals();
 
 	// Allocate cmd to have [2048] length and args to be 512 length
@@ -98,7 +99,17 @@ int main(){
 		numChars = getline(&userIn, &buffer, stdin);
 
 		// If numChars is -1, getline was interrupted (as far as I know), go back to top of while loop
-		if(numChars == -1){
+		if(numChars == -1){	
+			// Toggle fg mode
+			isFgMode = !isFgMode;
+		
+			if(isFgMode){
+				printf("\nEntering foreground-only mode (& is disabled)\n");
+				fflush(stdout);
+			}
+			else{
+				printf("\nExiting foreground-only mode\n");
+			}
 			clearerr(stdin);
 			continue;
 		}
@@ -136,6 +147,11 @@ int main(){
 
 			// Check file names and "cull" these arguments out of the array along with an ampersand if there is one
 			cullArgs(inFileName, outFileName, args, &argCount, hasAmp);
+
+			// Check if we're in fg only mode, if we are, make sure hasAmp is false
+			if(isFgMode && hasAmp){
+				hasAmp = false;
+			}
 
 			if(strcmp(cmd, "cd") == 0){
 				changeDirs(args, argCount);
@@ -179,14 +195,15 @@ void setupSignals(){
 	struct sigaction stp_action = {0};
 	stp_action.sa_handler = catchSIGTSTP;
 	sigfillset(&stp_action.sa_mask);
-	//stp_action.sa_flags = SA_RESTART;
+	ignore_action.sa_flags = 0;
 
 	sigaction(SIGTSTP, &stp_action, NULL);		// Catch SIGTSTP
+
 }
 
 void catchSIGTSTP(int signo){
-	char* message = "\nEntering FG Mode\n";
-	write(STDOUT_FILENO, message, 18);
+//	char* message = "\nEntering foreground-only mode (& is now ignored)\n";
+//	write(STDOUT_FILENO, message, 52);
 }
 
 /**********************
