@@ -14,6 +14,9 @@
 #define DEBUG 0
 #define MAXPID 512
 
+// Globals
+bool isFgMode;
+
 // Function prototypes
 void cd();
 void exitProg(char*, char**, char*, char*, char*, char*, int*);
@@ -63,7 +66,7 @@ int main(){
 	char** args;
 	char* expStr;				// Will be expanded string (replacing '$$' with pid)
 	int argCount;
-	bool isFgMode = false;
+	isFgMode = false;
 
 	// Setup signals for SIGINT and SIGTSTP
 	setupSignals();
@@ -99,17 +102,7 @@ int main(){
 		numChars = getline(&userIn, &buffer, stdin);
 
 		// If numChars is -1, getline was interrupted (as far as I know), go back to top of while loop
-		if(numChars == -1){	
-			// Toggle fg mode
-			isFgMode = !isFgMode;
-		
-			if(isFgMode){
-				printf("\nEntering foreground-only mode (& is disabled)\n");
-				fflush(stdout);
-			}
-			else{
-				printf("\nExiting foreground-only mode\n");
-			}
+		if(numChars == -1){		
 			clearerr(stdin);
 			continue;
 		}
@@ -158,7 +151,7 @@ int main(){
 			}
 			else{
 				// Fork and exec
-				forkAndExec(cmd, args, argCount, inFileName, outFileName, &childExitStatus, hasAmp, &childPids, &childCount);
+				forkAndExec(cmd, args, argCount, inFileName, outFileName, &childExitStatus, hasAmp, &childPids, &childCount);	
 			}
 		}
 
@@ -198,12 +191,20 @@ void setupSignals(){
 	ignore_action.sa_flags = 0;
 
 	sigaction(SIGTSTP, &stp_action, NULL);		// Catch SIGTSTP
-
 }
 
-void catchSIGTSTP(int signo){
-//	char* message = "\nEntering foreground-only mode (& is now ignored)\n";
-//	write(STDOUT_FILENO, message, 52);
+void catchSIGTSTP(int signo){	
+	// Toggle fg mode
+	isFgMode = !isFgMode;
+
+	if(isFgMode){
+		char* message = "\nEntering foreground-only mode (& is now ignored)\n";
+		write(STDOUT_FILENO, message, 52);	
+	}
+	else{
+		char* message = "\nExiting foreground-only mode\n";
+		write(STDOUT_FILENO, message, 32);
+	}
 }
 
 /**********************
@@ -401,6 +402,12 @@ void changeDirs(char** args, int argc){
 void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFileName, int* childExitStatus, bool hasAmp, int** childPids, int* childCount){
 	// Signal vars
 	struct sigaction default_action = {0};		// Init struct to be empty for CTRL+C (SIGINT)
+	struct sigaction block_action = {0};
+
+	sigset_t block;	
+	sigemptyset(&block);
+	sigaddset(&block, SIGTSTP);
+	sigprocmask(SIG_BLOCK, &block, NULL);
 
 	// File vars	
 	int targetFD, sourceFD;
@@ -424,7 +431,7 @@ void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFi
 				default_action.sa_handler = SIG_DFL;
 				default_action.sa_flags = SA_RESTART;
 				
-				sigaction(SIGINT, &default_action, NULL);	// Default action for  SIGINT
+				sigaction(SIGINT, &default_action, NULL);	// Default action for  SIGINT		
 			}
 
 			// If an output file name exists
@@ -475,8 +482,8 @@ void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFi
 			break;
 		default:		// Parent
 			// If a FG process, wait for proc to finish
-			if(!hasAmp){
-				actualPid = waitpid(spawnPid, childExitStatus, 0);	// Wait for child to finish before moving on
+			if(!hasAmp){				
+				actualPid = waitpid(spawnPid, childExitStatus, 0);	// Wait for child to finish before moving on		
 
 				// Check exit status to see if it was terminated by a signal
 				if (WIFSIGNALED(*childExitStatus)){
@@ -493,7 +500,9 @@ void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFi
 			}
 				
 			break;
-	}
+	}	
+	// Unblock CTRL+Z signal so we can catch it with our function
+	sigprocmask(SIG_UNBLOCK, &block, NULL);
 }
 
 /**********************
