@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <signal.h>
 
 // Custom defines
 #define DEBUG 0
@@ -30,6 +31,8 @@ bool containsPid(int*, int);
 void addPid(int*, int, int*);
 void printChildPids(int*, int);
 void checkForTerm(int*, int*);
+void setupSignals();
+void catchSIGTSTP(int);
 
 int main(){
 	// Redirect and file variables
@@ -61,6 +64,9 @@ int main(){
 	char* expStr;				// Will be expanded string (replacing '$$' with pid)
 	int argCount;
 
+	// Setup signals for SIGINT and SIGSTP
+	setupSignals();
+
 	// Allocate cmd to have [2048] length and args to be 512 length
 	// Also, allocate other dynamic memory
 	cmd = malloc(2048 * sizeof(char));
@@ -69,7 +75,7 @@ int main(){
 	inFileName = calloc(256, sizeof(char));
 	outFileName = calloc(256, sizeof(char));
 	childPids = malloc(MAXPID * sizeof(int));
-
+	
 	// Begin console prompt
 	while(1){	
 		// Check child processes for termination
@@ -86,29 +92,42 @@ int main(){
 		memset(outFileName, '\0', sizeof(outFileName));	
 
 		printf(": ");
-		fflush(stdout);
+		fflush(stdout);	
+		
+		// Get line from user
+		numChars = getline(&userIn, &buffer, stdin);
 
-		// Get user input
-		numChars = getline(&userIn, &buffer, stdin);	// Get line from user
-		userIn[numChars - 1] = '\0';
-
-		// Built-in shell functions	
-		if(strcmp(userIn, "exit") == 0){
-			exitProg(cmd, args, userIn, expStr, inFileName, outFileName, childPids);
-		}
-		else if(strcmp(userIn, "status") == 0){
-			checkStatus(childExitStatus);
-		}
-		else if(strcmp(userIn, " ") == 0 || userIn[0] == '#' || strcmp(userIn, "") == 0){	// Comment line, skip
+		// If numChars is -1, getline was interrupted (as far as I know), go back to top of while loop
+		if(numChars == -1){
+			clearerr(stdin);
 			continue;
 		}
-		else{
-			// Expand user string
-			expandString(userIn, expStr, sPid, pidLen);
+	
+		userIn[numChars - 1] = '\0';		
 
-			// Parse expanded string and get the command and args
-			getCmdAndArgs(cmd, args, expStr, &argCount);
+		// Expand user string
+		expandString(userIn, expStr, sPid, pidLen);
 
+		// Parse expanded string and get the command and args
+		getCmdAndArgs(cmd, args, expStr, &argCount);	
+
+		// Built-in shell functions	
+		if(argCount < 1 || strcmp(args[0], " ") == 0 || args[0][0] == '#'){	// Comment line, skip
+			continue;
+		}
+		else if(strcmp(args[0], "exit") == 0){
+			if(argCount > 1){	// If argument count is greater than 1, then this isn't valid, ignore
+				continue;
+			}
+			exitProg(cmd, args, userIn, expStr, inFileName, outFileName, childPids);
+		}
+		else if(strcmp(args[0], "status") == 0){
+			if(argCount > 1){	// If argument count is greater than 1, then this isn't valid, ignore
+				continue;
+			}
+			checkStatus(childExitStatus);
+		}	
+		else{	
 			// Check for ampersand at end of user input
 			hasAmp = isAmp(args, argCount);
 
@@ -141,13 +160,41 @@ int main(){
 			printf(". Total: %d\n", argCount);
 			
 			printf("*******END DEBUG*************\n");
+			fflush(stdout);	
 		}
-		fflush(stdout);	
 	}
 
 	return 0;
 }
 
+void setupSignals(){
+	// Signal handling for SIGINT
+	struct sigaction ignore_action = {0};		// Init struct to be empty for CTRL+C (SIGINT)
+	ignore_action.sa_handler = SIG_IGN;
+	ignore_action.sa_flags = SA_RESTART;		// Restart system calls
+
+	sigaction(SIGINT, &ignore_action, NULL);	// Ignore SIGINT
+
+	// Signal handling for SIGSTP
+	struct sigaction stp_action = {0};
+	stp_action.sa_handler = catchSIGTSTP;
+	sigfillset(&stp_action.sa_mask);
+	//stp_action.sa_flags = SA_RESTART;
+
+	sigaction(SIGTSTP, &stp_action, NULL);		// Catch SIGTSTP
+}
+
+void catchSIGTSTP(int signo){
+	char* message = "\nEntering FG Mode\n";
+	write(STDOUT_FILENO, message, 18);
+}
+
+/**********************
+ * Function checks for termination of a child process. Given an
+ * array of ints (childPids) and the number of childPids (count),
+ * we'll loop through and check for any child processes that
+ * have terminated.
+ **********************/
 void checkForTerm(int* childPids, int* count){
 	int exitStatus;
 	int check;
@@ -224,14 +271,19 @@ bool isEmpty(int childCount){
 void checkStatus(int stat){
 	int exitStatus;
 
-	if(stat == -1){
-		printf("No status to check.\n");
+	if(stat < 0){
+		printf("exit value 0\n");
 		fflush(stdout);
-	}
-	
-	if(WIFEXITED(stat)){
+	}	
+	else if(WIFEXITED(stat) != 0){
 		exitStatus = WEXITSTATUS(stat);
 		printf("exit value %d\n", exitStatus);
+		fflush(stdout);
+	}
+	else if(WIFSIGNALED(stat) != 0){
+		exitStatus = WTERMSIG(stat);
+		printf("terminated by signal %d\n", exitStatus);
+		fflush(stdout);
 	}
 }
 
@@ -323,12 +375,20 @@ void changeDirs(char** args, int argc){
 }
 
 /***************************
- * Write stuff
+ * This function is the main function that causes child processes to run.
+ * We pass in the command (cmd), arguments for the cmd (args), any INPUT file name
+ * passed in by the user, any OUTPUT file name passed in by the user, the flag (hasAmp) that says
+ * if the user wants this process to run in the background, the array of childPids, and the cound
+ * of childPids.
  ***************************/
 void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFileName, int* childExitStatus, bool hasAmp, int** childPids, int* childCount){
+	// Signal vars
+	struct sigaction default_action = {0};		// Init struct to be empty for CTRL+C (SIGINT)
+
 	// File vars	
 	int targetFD, sourceFD;
 	int result;
+	int exitStatus;
 
 	// Other vars
 	pid_t spawnPid = -5;
@@ -341,6 +401,15 @@ void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFi
 			exit(1);
 			break;
 		case 0:			// Child
+			// If this process is a FG process, unblock CTRL+C (SIGINT) functionality
+			if(!hasAmp){	
+				// Unblock CTRL+c (SIGINT) signal that we blocked in the parent
+				default_action.sa_handler = SIG_DFL;
+				default_action.sa_flags = SA_RESTART;
+				
+				sigaction(SIGINT, &default_action, NULL);	// Default action for  SIGINT
+			}
+
 			// If an output file name exists
 			if(strcmp(outFileName, "")){
 				targetFD = open(outFileName, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -391,6 +460,12 @@ void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFi
 			// If a FG process, wait for proc to finish
 			if(!hasAmp){
 				actualPid = waitpid(spawnPid, childExitStatus, 0);	// Wait for child to finish before moving on
+
+				// Check exit status to see if it was terminated by a signal
+				if (WIFSIGNALED(*childExitStatus)){
+					exitStatus = WTERMSIG(*childExitStatus);
+					printf("terminated by signal %d\n", exitStatus );
+				}
 			}
 			else{
 				// BG Process
