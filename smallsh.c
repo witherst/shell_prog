@@ -19,7 +19,7 @@ bool isFgMode;
 
 // Function prototypes
 void cd();
-void exitProg(char*, char**, char*, char*, char*, char*, int*);
+void exitProg(char*, char**, char*, char*, char*, char*, int*, int);
 int pidLength(int);
 void getCmdAndArgs(char*, char**, char*, int*);
 void expandString(char*, char*, int, int);
@@ -123,11 +123,13 @@ int main(){
 			if(argCount > 1){	// If argument count is greater than 1, then this isn't valid, ignore
 				continue;
 			}
-			exitProg(cmd, args, userIn, expStr, inFileName, outFileName, childPids);
+			exitProg(cmd, args, userIn, expStr, inFileName, outFileName, childPids, childCount);
 		}
 		else if(strcmp(args[0], "status") == 0){
 			if(argCount > 1){	// If argument count is greater than 1, then this isn't valid, ignore
-				continue;
+				if(*args[1] != '&'){
+					continue;
+				}
 			}
 			checkStatus(childExitStatus);
 		}	
@@ -459,6 +461,7 @@ void forkAndExec(char* cmd, char** args, int argc, char* inFileName, char* outFi
 				sourceFD = open(inFileName, O_RDONLY);	
 				if(sourceFD < 0){
 					printf("cannot open %s for input\n", inFileName);
+					exit(1);
 					return;
 				}
 
@@ -587,7 +590,13 @@ void cd(){
  * will be freed from cmd and args array. And the sneaky
  * userIn that's malloced within strtok.
  ****************/
-void exitProg(char* cmd, char** args, char* userIn, char* expStr, char* inFileName, char* outFileName, int* childPids){
+void exitProg(char* cmd, char** args, char* userIn, char* expStr, char* inFileName, char* outFileName, int* childPids, int childCount){
+	// Kill off remaining child processes if there are any running in the BG
+	for(int i = 0; i < childCount; i++){
+		kill(childPids[i], SIGKILL);
+	}
+
+	// Free memory
 	free(cmd);
 	free(args);
 	free(userIn);
