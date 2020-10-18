@@ -1,4 +1,4 @@
-# shell_prog3
+# shell_prog
 Writing a small shell in C, similar to bash.
 
 The shell will run command line instructions and return results similar to other shells, but without the fancier features.
